@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Play Studio – Animal Tower</title>
+<style>
+  :root { --ink:#3b2f4a; --pink:#ec4d9b; --teal:#0f7c7c; }
+  * { box-sizing:border-box; margin:0 }
+  body { color:var(--ink); font-family:"Trebuchet MS",system-ui,sans-serif;
+         background:linear-gradient(#fff4d6 0%,#ffe3c4 55%,#f7cfa5 100%); }
+  #scroller { height:700vh; }                       /* scroll length = build length */
+  #stage { position:sticky; top:0; height:100vh; overflow:hidden; }
+  canvas { position:absolute; inset:0; width:100%; height:100%; touch-action:pan-y; }
+  header { position:absolute; top:2vh; left:0; right:0; text-align:center; pointer-events:none; }
+  h1 { font-family:"Lilita One","Trebuchet MS",sans-serif; font-weight:400; font-size:clamp(2.4rem,7vw,4.4rem); line-height:1; letter-spacing:.02em;
+       color:#ffd23f; -webkit-text-stroke:.09em #1b4fb0; paint-order:stroke fill;
+       text-shadow:0 .05em 0 #1b4fb0,0 .1em 0 #12357a,0 .16em .25em rgba(10,30,90,.45); transform:rotate(-2deg); }
+  #sub { font-family:Fredoka,sans-serif; font-weight:700; margin-top:.9em; color:#fff; letter-spacing:.14em; text-transform:uppercase; font-size:.8rem; text-shadow:0 2px 6px rgba(10,40,100,.6); }
+  #caption { position:fixed; left:1.2rem; bottom:6.5vh; white-space:nowrap; padding:.35em 1.1em; border-radius:2em; background:var(--pink); color:#fff;
+             font-family:Fredoka,sans-serif; font-size:clamp(1rem,2.4vw,1.5rem); font-weight:700; box-shadow:0 4px 0 #b32f72,0 10px 20px rgba(0,0,0,.2); }
+  #dots { position:fixed; left:1.6rem; bottom:3.4vh; display:flex; gap:.5rem; }
+  #dots i { width:.9rem; height:.9rem; border-radius:50%; background:rgba(255,255,255,.55); box-shadow:inset 0 -2px 0 rgba(0,0,0,.15); transition:background .3s,transform .3s; }
+  #dots i.on { background:var(--c); transform:scale(1.35); }
+  #hint { font-family:Fredoka,sans-serif; font-weight:500; color:#fff; text-shadow:0 2px 6px rgba(10,40,100,.6); position:absolute; bottom:1.6vh; width:100%; text-align:center; font-size:1rem; opacity:.95; transition:opacity .4s; pointer-events:none; }
+  #hint b { display:inline-block; animation:bob 1.2s ease-in-out infinite; }
+  @keyframes bob { 50% { transform:translateY(7px) } }
+  #err { display:none; position:absolute; inset:30% 10% auto; text-align:center; background:#fff; padding:1em; border-radius:1em; }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;700&family=Lilita+One&display=swap" rel="stylesheet">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+  "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js" } }
+</script>
+</head>
+<body>
+<div id="scroller">
+  <div id="stage">
+    <canvas id="c"></canvas>
+    <header><h1>Play Studio</h1><p id="sub">Stack · Balance · Giggle</p><span id="caption">Scroll to build!</span></header>
+    <div id="dots"></div>
+    <div id="hint"><b>↓</b> Scroll to stack the animals · tap one to wobble it</div>
+    <div id="err">Could not load the 3D engine. Check your internet connection and reload.</div>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import * as CANNON from 'cannon-es';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { BokehPass } from 'three/addons/postprocessing/BokehPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+addEventListener('error', e => { const el = document.getElementById('err'); el.style.display = 'block'; el.append(' [' + (e.message || 'module failed') + ']'); });
+
+/* ---------------- renderer / scene ---------------- */
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:false, alpha:false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = .82;
+
+const scene = new THREE.Scene();
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+const camera = new THREE.PerspectiveCamera(32, 1, .5, 90);
+scene.background = new THREE.Color(0x9bd8ff);
+
+const sun = new THREE.DirectionalLight(0xfff0dc, 1.9);
+sun.position.set(6, 12, 8); sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048); sun.shadow.radius = 5; sun.shadow.bias = -.0006; sun.shadow.normalBias = .04;
+Object.assign(sun.shadow.camera, { left:-9, right:9, top:12, bottom:-4, near:1, far:40 });
+const fill = new THREE.DirectionalLight(0xbcd8ff, .9); fill.position.set(-9, 5, 6);      // cool fill, like a window
+const rim = new THREE.DirectionalLight(0xfff2cf, 1.1); rim.position.set(-2, 8, -9);       // back rim light
+scene.add(sun, fill, rim, new THREE.HemisphereLight(0xffffff, 0xffd3a8, .55));
+
+/* ---------------- wooden table (procedural texture) ---------------- */
+function woodTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 1024;
+  const g = c.getContext('2d');
+  g.fillStyle = '#e8c79a'; g.fillRect(0, 0, 1024, 1024);
+  for (let i = 0; i < 260; i++) {
+    g.strokeStyle = `rgba(${120 + Math.random()*40|0},${80 + Math.random()*30|0},40,${Math.random()*.12})`;
+    g.lineWidth = 1 + Math.random() * 3;
+    const y = Math.random() * 1024;
+    g.beginPath(); g.moveTo(0, y);
+    for (let x = 0; x <= 1024; x += 128) g.lineTo(x, y + Math.sin(x * .01 + i) * 6);
+    g.stroke();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(4, 2);
+  t.anisotropy = 8;
+  return t;
+}
+const floor3d = new THREE.Mesh(new THREE.BoxGeometry(70, .6, 26),
+  new THREE.MeshPhysicalMaterial({ map:woodTexture(), roughness:.4, clearcoat:.35, color:0xf2d3a6 }));
+floor3d.material.map.repeat.set(7, 3);
+floor3d.position.set(0, -.3, 4); floor3d.receiveShadow = true; scene.add(floor3d);
+
+/* cloud wallpaper, the way a toy-room wall should look */
+function wallTexture() {
+  const c = document.createElement('canvas'); c.width = 2048; c.height = 1024;
+  const g = c.getContext('2d');
+  const sky = g.createLinearGradient(0, 0, 0, 1024); sky.addColorStop(0, '#1f86e0'); sky.addColorStop(1, '#5db4f2');
+  g.fillStyle = sky; g.fillRect(0, 0, 2048, 1024);
+  let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let i = 0; i < 16; i++) {
+    const cx = (i % 4) * 540 + rnd() * 120, cy = 90 + Math.floor(i / 4) * 250 + rnd() * 60, sc = .75 + rnd() * .6;
+    for (const [dy, col] of [[14, 'rgba(90,150,215,.35)'], [0, '#fff']]) {      // soft shadow pass, then white puffs
+      g.fillStyle = col;
+      for (const [x, y, rad] of [[0,0,58],[62,-22,74],[135,-8,64],[200,6,50],[-62,10,46],[82,18,52]]) {
+        g.beginPath(); g.arc(cx + x * sc, cy + y * sc + dy, rad * sc, 0, Math.PI * 2); g.fill();
+      }
+    }
+  }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.wrapS = THREE.RepeatWrapping; t.repeat.set(2.6, 1); t.anisotropy = 8; return t;
+}
+const wall = new THREE.Mesh(new THREE.PlaneGeometry(70, 30), new THREE.MeshStandardMaterial({ map:wallTexture(), roughness:.95, envMapIntensity:.5 }));
+wall.position.set(0, 15, -8); wall.receiveShadow = true; scene.add(wall);
+const baseboard = new THREE.Mesh(new RoundedBoxGeometry(70, .9, .35, 3, .08), new THREE.MeshStandardMaterial({ color:0xfff7ea, roughness:.5 }));
+baseboard.position.set(0, .45, -7.8); baseboard.receiveShadow = baseboard.castShadow = true; scene.add(baseboard);
+
+/* toys lying around the room (decoration only, they sit outside the tower) */
+function letterTexture(ch, bg, fg) {
+  const c = document.createElement('canvas'); c.width = c.height = 256; const g = c.getContext('2d');
+  g.fillStyle = bg; g.fillRect(0, 0, 256, 256);
+  g.strokeStyle = 'rgba(255,255,255,.55)'; g.lineWidth = 10; g.strokeRect(14, 14, 228, 228);
+  g.fillStyle = fg; g.font = '170px "Lilita One","Trebuchet MS",sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(ch, 128, 140);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+function letterCube(ch, bg, fg, x, y, z, ry) {
+  const m = new THREE.Mesh(new RoundedBoxGeometry(1.15, 1.15, 1.15, 4, .12),
+    new THREE.MeshPhysicalMaterial({ map:letterTexture(ch, bg, fg), roughness:.35, clearcoat:.6 }));
+  m.position.set(x, y, z); m.rotation.y = ry; m.castShadow = m.receiveShadow = true; scene.add(m);
+}
+letterCube('A', '#e8403a', '#ffffff', -5.4, .575, 1.0, .35);
+letterCube('B', '#ffd23f', '#1b4fb0', -4.2, .575, 2.5, -.4);
+letterCube('C', '#2f80ed', '#ffffff', -5.35, 1.73, 1.05, .8);
+letterCube('Z', '#3dbb6a', '#ffffff', 5.4, .575, .6, -.25);
+const ballTex = (() => {
+  const c = document.createElement('canvas'); c.width = 512; c.height = 256; const g = c.getContext('2d');
+  ['#e8403a', '#ffd23f', '#2f80ed', '#3dbb6a', '#ff8a2a', '#ffffff'].forEach((col, i) => { g.fillStyle = col; g.fillRect(i * 86, 0, 86, 256); });
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+})();
+const ball = new THREE.Mesh(new THREE.SphereGeometry(.7, 48, 32), new THREE.MeshPhysicalMaterial({ map:ballTex, roughness:.3, clearcoat:.9 }));
+ball.position.set(4.2, .7, 2.4); ball.castShadow = ball.receiveShadow = true; scene.add(ball);
+
+/* ---------------- animal blocks: extruded silhouettes ---------------- */
+const D = .5;                                       // block thickness
+const REL = x => x > 0 ? x * 1.2 + .04 : x;         // exaggerate relief so painted details read from the camera
+const rr = (x, y, w, h, r) => {
+  const s = new THREE.Shape();
+  s.moveTo(x + r, y); s.lineTo(x + w - r, y); s.quadraticCurveTo(x + w, y, x + w, y + r);
+  s.lineTo(x + w, y + h - r); s.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  s.lineTo(x + r, y + h); s.quadraticCurveTo(x, y + h, x, y + h - r);
+  s.lineTo(x, y + r); s.quadraticCurveTo(x, y, x + r, y); return s;
+};
+const ell = (cx, cy, rx, ry) => { const s = new THREE.Shape(); s.absellipse(cx, cy, rx, ry, 0, Math.PI * 2, false, 0); return s; };
+
+// generic four-legged body: torso + head + legs with toes + tail + bead dots. Origin: x centred, y = floor of the block.
+const quad = (W, H, lh, c, lc, dc) => add => {
+  const hw = .44 * W;
+  add(rr(-W/2, lh, W * .7, H - lh, .22), c);
+  add(rr(W/2 - hw, lh * .8, hw, H - lh * .8, .22), c);
+  for (const x0 of [-W/2 + .08, W/2 - .55]) {
+    add(rr(x0, 0, .42, lh + .25, .1), lc, D - .03);
+    for (let i = 0; i < 3; i++) add(ell(x0 + .1 + i * .11, .06, .045, .045), 0xfff1d6, D - .01);   // toes
+  }
+  const x1 = -W/2 + .3, x2 = W * .2 - .1;
+  for (let i = 0; i < 4; i++) add(ell(x1 + (x2 - x1) * i / 3, lh + .13, .045, .045), dc, D + .02);  // painted bead band
+  add(rr(-W/2 - .16, H * .5, .26, .1, .05), lc, D - .1);       // tail
+  add(ell(-W/2 - .16, H * .5 + .05, .06, .1), dc, D - .04);    // tail tip
+};
+const PINK = 0xf4a5b5, CREAM = 0xfff1d6;
+
+const DEFS = [
+  { name:'rhino', W:2.1, H:1.05, eye:[.72,.75], mouth:[.78,.38,.12], dots:[[.98,.6,.035],[.88,.6,.035]],
+    build(add) { const {W,H}=this; quad(W,H,.3,0x62b94f,0x4f9e40,CREAM)(add);
+      add(ell(W/2-.02,H-.5,.17,.13),0xf3e6c8,D+.06); add(ell(W/2-.45,H-.07,.1,.07),0xf3e6c8,D+.06);   // horns
+      add(ell(W/2-.8,H-.14,.1,.14),0x4f9e40,D+.08); add(ell(W/2-.8,H-.14,.05,.08),PINK,D+.12);         // ear
+      add(ell(-.55,.65,.3,.22),0x56a846,D+.04); add(ell(.05,.62,.2,.18),0x56a846,D+.04); } },          // armour plates
+  { name:'hippo', W:2.0, H:.95, eye:[.65,.7], mouth:[.72,.2,.14], mextra:.06,
+    dots:[[.8,.4,.04,.06],[.95,.4,.04,.06]],
+    build(add) { const {W,H}=this; quad(W,H,.28,0xa062c9,0x8a4fb3,CREAM)(add);
+      add(ell(W/2-.28,.32,.34,.24),0xc99ae0,D+.06);
+      add(rr(.86,.08,.07,.1,.02),0xffffff,D+.08); add(rr(.6,.08,.07,.1,.02),0xffffff,D+.08);           // little tusks
+      add(ell(W/2-.78,H-.1,.1,.13),0x8a4fb3,D+.08); add(ell(W/2-.78,H-.1,.05,.07),PINK,D+.12);        // ear
+      add(ell(.42,.42,.12,.09),0xe3a6d8,D+.05);                                                         // cheek
+      for (const [x,y] of [[-.6,.7],[-.2,.52],[-.7,.46],[.1,.7]]) add(ell(x,y,.1,.08),0xb98ad9,D+.04); } },
+  { name:'elephant', W:1.9, H:1.1, eye:[.57,.78], mouth:[.5,.52,.08],
+    build(add) { const {W,H}=this; quad(W,H,.32,0x4aa3e0,0x3b8dc6,CREAM)(add);
+      add(ell(W/2-.8,H*.55,.27,.33),0x7cc0ee,D+.12); add(ell(W/2-.8,H*.55,.15,.2),PINK,D+.16);          // ear
+      add(rr(W/2-.28,.02,.24,H*.7,.11),0x4aa3e0,D+.02);
+      for (let i = 0; i < 4; i++) add(rr(W/2-.28,.16+i*.14,.24,.025,.012),0x2f7bb0,D+.05);              // trunk wrinkles
+      add(ell(W/2-.02,.45,.08,.05),CREAM,D+.03);                                                         // tusk
+      add(ell(.3,H-.1,.14,.06),0x7cc0ee,D+.03); } },
+  { name:'croc', W:2.3, H:.62, eye:[.45,.45], mouth:[.85,.25,.22], mextra:.04, dots:[[1.1,.36,.03,.04],[1.0,.36,.03,.04]],
+    build(add) { const {W,H}=this; quad(W,H,.14,0x6cc04a,0x55a63a,CREAM)(add);
+      add(rr(W/2-.95,.14,.95,.3,.1),0x5aaa3c,D+.04);
+      add(rr(-W/2+.2,.14,1.6,.07,.03),0xe7f3a8,D+.02);                                                   // pale belly
+      for (let i = 0; i < 8; i++) add(ell(-.95+i*.28,H-.06,.1,.06),0x3f8a2d,D+.03);                      // back ridges
+      for (const x of [-.55,-.1,.35]) add(ell(x,.35,.09,.06),0x4a9a35,D+.06);
+      for (let i = 0; i < 7; i++) { const s=new THREE.Shape(), x=.3+i*.12;                                // teeth
+        s.moveTo(x,.15); s.lineTo(x+.07,.15); s.lineTo(x+.035,.07); add(s,0xffffff,D+.02); }
+      add(rr(-W/2-.5,.2,.55,.16,.08),0x55a63a,D-.1); } },
+  { name:'lion', W:1.8, H:1.05, eye:[.55,.62], ez:(D + REL(.2)) / 2 + .07, mouth:[.67,.5,.07], mextra:.3,
+    build(add) { const {W,H}=this, hx=W/2-.38, hy=H-.42;
+      quad(W,H,.3,0xf08a2a,0xd9741b,0xffe3a0)(add);
+      add(ell(hx,hy,.42,.42),0xd9561b,D+.1);
+      for (let i=0;i<10;i++) { const a=i/10*Math.PI*2; add(ell(hx+Math.cos(a)*.42,hy+Math.sin(a)*.42,.12,.12),0xd9561b,D+.1); }
+      add(ell(hx-.3,hy+.33,.1,.1),0xd9741b,D+.04); add(ell(hx+.3,hy+.33,.1,.1),0xd9741b,D+.04);          // ears
+      add(ell(hx,hy,.3,.3),0xffc36b,D+.2);
+      add(ell(hx+.12,hy-.12,.14,.1),CREAM,D+.3); add(ell(hx+.15,hy-.04,.05,.035),0xd8506e,D+.34);        // muzzle + nose
+      add(ell(-W/2-.16,H*.5+.05,.09,.13),0xd9561b,D-.02); } },                                           // tail tuft
+  { name:'giraffe', W:1.5, H:.95, eye:[.55,1.93], neck:true, mouth:[.64,1.82,.07], mextra:.04, dots:[[.75,1.92,.025,.04]],
+    build(add) { const {W,H}=this; quad(W,H,.35,0xffc83d,0xe6ae22,CREAM)(add);
+      add(rr(W/2-.5,H-.2,.3,1.1,.12),0xffc83d); add(rr(W/2-.62,H+.8,.62,.32,.15),0xffc83d);
+      add(rr(W/2-.53,H-.2,.05,1.1,.02),0x8a5a2b,D+.04);                                                  // mane stripe
+      add(rr(W/2-.5,H+1.1,.07,.18,.03),0x8a5a2b,D-.2); add(rr(W/2-.28,H+1.1,.07,.18,.03),0x8a5a2b,D-.2);
+      add(ell(W/2-.465,H+1.3,.055,.055),0x5a3a1c,D-.2); add(ell(W/2-.245,H+1.3,.055,.055),0x5a3a1c,D-.2); // ossicone tips
+      add(ell(W/2-.63,H+1.02,.13,.06),0xe6ae22,D-.1);                                                    // ear
+      add(ell(W/2-.05,H+.93,.1,.14),0xffe8a8,D+.04);                                                     // muzzle
+      for (const [x,y] of [[-.4,.55],[-.1,.7],[.15,.45],[-.5,.78],[.3,.75],[W/2-.35,H+.3],[W/2-.35,H+.6]]) add(ell(x,y,.09,.11),0xd9902b,D+.06); } }
+];
+
+const grain = (() => { const c = document.createElement('canvas'); c.width = c.height = 256; const g = c.getContext('2d'), im = g.createImageData(256, 256);
+  for (let i = 0; i < im.data.length; i += 4) { const v = 128 + (Math.random() - .5) * 70; im.data[i] = im.data[i+1] = im.data[i+2] = v; im.data[i+3] = 255; }
+  g.putImageData(im, 0, 0); const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(2, 2); return t; })();
+const black = new THREE.MeshPhysicalMaterial({ color:0x1d1620, roughness:.15, clearcoat:1 });
+const white = new THREE.MeshBasicMaterial({ color:0xffffff });
+const blush = new THREE.MeshStandardMaterial({ color:0xff8fb0, roughness:.8, transparent:true, opacity:.7 });
+
+function buildAnimal(def) {
+  const g = new THREE.Group(), inner = new THREE.Group();
+  inner.position.y = -def.H / 2; g.add(inner);
+  const add = (shape, color, depth = D) => {
+    depth = D + REL(depth - D);
+    const bb = new THREE.Box2().setFromPoints(shape.getPoints(8)), small = Math.min(bb.max.x - bb.min.x, bb.max.y - bb.min.y);
+    const geo = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled:true, bevelThickness:.06, bevelSize:Math.min(.05, small * .3), bevelSegments:4, curveSegments:20 });   // bevel must stay smaller than the part
+    geo.translate(0, 0, -depth / 2);
+    const m = new THREE.Mesh(geo, new THREE.MeshPhysicalMaterial({ color, roughness:.34, clearcoat:.85, clearcoatRoughness:.12, sheen:.5, sheenColor:new THREE.Color(0xffffff), bumpMap:grain, bumpScale:.35 }));
+    m.castShadow = m.receiveShadow = true; inner.add(m);
+  };
+  def.build(add);
+  for (const s of [1, -1]) {                       // eyes + blush on both faces of the block
+    const z = s * (def.ez ?? D / 2 + .06), [x, y] = def.eye;
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(.075, 20, 12), black);
+    eye.scale.z = .5; eye.position.set(x, y, z);
+    const shine = new THREE.Mesh(new THREE.SphereGeometry(.022, 8, 6), white); shine.position.set(x + .025, y + .03, z + s * .04);
+    const cheek = new THREE.Mesh(new THREE.SphereGeometry(.07, 16, 10), blush); cheek.scale.z = .15; cheek.position.set(x - .14, y - .17, z);
+    inner.add(eye, shine, cheek);
+    if (def.mouth) {                                 // smile
+      const [mx_, my, w = .1] = def.mouth, mz = s * ((D + REL(def.mextra ?? 0)) / 2 + .07);
+      const smile = new THREE.Mesh(new THREE.TubeGeometry(new THREE.QuadraticBezierCurve3(
+        new THREE.Vector3(mx_ - w, my + .03, mz), new THREE.Vector3(mx_, my - .06, mz), new THREE.Vector3(mx_ + w, my + .03, mz)), 12, .014, 6), black);
+      inner.add(smile);
+    }
+    for (const [x, y, r, ex = 0] of def.dots ?? []) {   // nostrils
+      const dot = new THREE.Mesh(new THREE.SphereGeometry(r, 12, 8), black);
+      dot.scale.z = .3; dot.position.set(x, y, s * ((D + REL(ex)) / 2 + .07)); inner.add(dot);
+    }
+  }
+  return g;
+}
+
+/* ---------------- physics: 2.5D (blocks stay in the plane, like the toy on a table) ---------------- */
+const world = new CANNON.World({ gravity:new CANNON.Vec3(0, -20, 0) });
+world.solver.iterations = 30;
+const mat = new CANNON.Material();
+world.defaultContactMaterial = new CANNON.ContactMaterial(mat, mat, { friction:.9, restitution:.05 });
+const floor = new CANNON.Body({ mass:0, shape:new CANNON.Plane(), material:mat });
+floor.quaternion.setFromEuler(-Math.PI / 2, 0, 0); world.addBody(floor);
+
+const live = [];                                    // spawned animals, bottom → top
+let towerTop = 0, spawnLock = 0;
+
+function spawn(def) {
+  const body = new CANNON.Body({ mass:1, material:mat, linearDamping:.2, angularDamping:.8 });
+  body.addShape(new CANNON.Box(new CANNON.Vec3(def.W / 2, def.H / 2, D / 2)));
+  if (def.neck) body.addShape(new CANNON.Box(new CANNON.Vec3(.15, .45, D / 2)), new CANNON.Vec3(def.W / 2 - .35, def.H / 2 + .45, 0));
+  body.linearFactor.set(1, 1, 0); body.angularFactor.set(0, 0, 1);
+  body.position.set((Math.random() - .5) * .08, Math.max(towerTop, 0) + def.H / 2 + 1.6, 0);
+  body.sleepSpeedLimit = .15; body.allowSleep = true;
+  world.addBody(body);
+  const mesh = buildAnimal(def); scene.add(mesh);
+  live.push({ def, body, mesh, dying:0 });
+}
+
+function topOfTower() {
+  let t = 0;
+  for (const a of live) if (!a.dying) t = Math.max(t, a.body.position.y + a.def.H / 2 + (a.def.neck ? .9 : 0));
+  return t;
+}
+
+/* ---------------- scroll → how many animals are stacked ---------------- */
+const scroller = document.getElementById('scroller');
+const caption = document.getElementById('caption'), hint = document.getElementById('hint');
+const N = DEFS.length;
+const DBG = new URLSearchParams(location.search).get('n');   // ?n=6 jumps straight to N animals (testing)
+let target = 0, prog = 0;
+function onScroll() {
+  const p = Math.min(1, Math.max(0, scrollY / (scroller.offsetHeight - innerHeight)));
+  target = DBG ? +DBG : Math.min(N, Math.ceil(p * N * 1.08));
+  hint.style.opacity = p > .02 ? 0 : .95; prog = p;
+}
+addEventListener('scroll', onScroll, { passive:true }); onScroll();
+
+const dotsEl = document.getElementById('dots'), COLORS = ['#62b94f','#a062c9','#4aa3e0','#6cc04a','#f08a2a','#ffc83d'];
+DEFS.forEach((d, i) => { const el = document.createElement('i'); el.style.setProperty('--c', COLORS[i]); dotsEl.append(el); });
+const CHEERS = ['Scroll to build!', 'Hello rhino!', 'Add a hippo…', 'Big blue elephant!', 'Careful, crocodile!', 'Roar! A lion!', 'The tall giraffe!'];
+
+/* ---------------- tap to wobble ---------------- */
+const ray = new THREE.Raycaster(), pt = new THREE.Vector2();
+canvas.addEventListener('pointerdown', e => {
+  pt.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(pt, camera);
+  const hit = ray.intersectObjects(live.map(a => a.mesh), true)[0];
+  if (!hit) return;
+  const a = live.find(a => a.mesh.getObjectById(hit.object.id));
+  if (!a) return;
+  a.body.wakeUp();
+  a.body.applyImpulse(new CANNON.Vec3((Math.random() - .5) * 5, 2.5, 0));
+});
+
+/* ---------------- post: depth of field, soft bloom, warm grade ---------------- */
+const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(2, 2, { type:THREE.HalfFloatType, samples:4 }));
+composer.addPass(new RenderPass(scene, camera));
+const bokeh = new BokehPass(scene, camera, { focus:20, aperture:.0011, maxblur:.011 });
+composer.addPass(bokeh);
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(512, 512), .16, .7, .92));
+composer.addPass(new OutputPass());
+composer.addPass(new ShaderPass({                       // vignette + gentle warm grade
+  uniforms:{ tDiffuse:{ value:null } },
+  vertexShader:'varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }',
+  fragmentShader:'uniform sampler2D tDiffuse; varying vec2 vUv; void main(){ vec3 c=texture2D(tDiffuse,vUv).rgb; c*=vec3(1.03,1.0,.96); c=mix(vec3(dot(c,vec3(.299,.587,.114))),c,1.12); float v=smoothstep(.95,.35,distance(vUv,vec2(.5))); c*=mix(.82,1.,v); gl_FragColor=vec4(c,1.); }'
+}));
+
+/* ---------------- resize, camera, loop ---------------- */
+let mx = .5;
+addEventListener('pointermove', e => mx = e.clientX / innerWidth);
+function resize() {
+  renderer.setSize(innerWidth, innerHeight, false); composer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize); resize();
+
+if (DBG) {                                          // testing: build the tower instantly
+  for (let i = 0; i < +DBG; i++) { spawn(DEFS[i]); towerTop = topOfTower(); for (let k = 0; k < 90; k++) world.step(1 / 60); }
+  for (let k = 0; k < 120; k++) world.step(1 / 60);
+}
+window.__dbg = { live };
+let camY = 2.2, camD = 12, last = performance.now();
+renderer.setAnimationLoop(now => {
+  const dt = Math.min(.05, Math.max(0, (now - last) / 1000));   // rAF stamp can precede performance.now() on frame 1 last = now;
+
+  spawnLock -= dt;
+  const alive = live.filter(a => !a.dying).length;
+  if (spawnLock <= 0) {
+    const settled = !live.length || live[live.length - 1].body.velocity.length() < .8;   // wait until the last block stopped moving
+    if (alive < target && settled) { spawn(DEFS[alive]); spawnLock = .5; }
+    else if (alive > target) { live.filter(a => !a.dying).pop().dying = 1; spawnLock = .25; }
+  }
+  [...dotsEl.children].forEach((el, i) => el.classList.toggle('on', i < alive));
+  caption.textContent = CHEERS[alive] + (alive === N ? ' 🎉' : '');
+
+  world.step(1 / 60, dt, 3);
+  for (let i = live.length - 1; i >= 0; i--) {
+    const a = live[i], b = a.body;
+    a.mesh.position.copy(b.position); a.mesh.quaternion.copy(b.quaternion);
+    if (a.dying) {                                  // shrink away when scrolling back up
+      a.dying -= dt * 4; a.mesh.scale.setScalar(Math.max(.001, a.dying));
+      if (a.dying <= 0) { world.removeBody(b); scene.remove(a.mesh); live.splice(i, 1); }
+    }
+  }
+
+  towerTop = topOfTower();
+  const k = 1 - Math.exp(-dt * 2.5);                // smooth camera follows the tower up
+  camY += (1.8 + towerTop * .46 - camY) * k;
+  const wantD = (13 + towerTop * 1.0) * 1.26 * Math.max(1, 1.15 / camera.aspect);
+  camD += (wantD - camD) * k;
+  camera.position.set((mx - .5) * 2.4 + (prog - .5) * 4, camY + 1.6, camD);
+  camera.lookAt(0, camY + .5, 0);
+  bokeh.uniforms.focus.value = camera.position.distanceTo(new THREE.Vector3(0, camY, 0)) + 1;
+  composer.render();
+});
+</script>
+</body>
+</html>
